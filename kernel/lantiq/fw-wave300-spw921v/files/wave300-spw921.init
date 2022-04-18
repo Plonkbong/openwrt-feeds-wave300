@@ -1,0 +1,159 @@
+#!/bin/sh /etc/rc.common
+
+# if you want to use the wlan device into a bridge like normal accespoint
+# add the wlaninterface to the /etc/config/network, like the following lines:
+#
+#
+#...
+# config device
+# 		option name 'br-lan'
+#		option type 'bridge'
+#		list ports 'eth0.1'
+#		list ports 'wlan0'
+#...
+#
+
+
+START=
+
+IF=wlan0
+CHANNEL=56
+ESSID="MyWlan"
+PASSPHRASE=1234567890
+
+FW_SUB_DIR=wave300fwset-spw921v
+MODEL=3A
+HWREV=RevC
+BANDLIST="A BG"
+
+TMP_D=/tmp/$FW_SUB_DIR
+HOSTAPD_CONF_FILE="$TMP_D/etc/mtlk-hostapd.conf"
+
+
+
+extra_command "prepare"   "prepare the start of wlan, it makes the config files and link some firmware"
+extra_command "unprepare" "remove config files and firmware"
+extra_command "lmodule"   "load the kernel modules"
+extra_command "ulmodule"  "unload the kernel modules, ATTENTION it does not work the rooter will reboot"
+extra_command "ifstart"   "Starting the wlan interface and hostapd"
+extra_command "ifstop"    "Stops the wlan interface and kill hostapd"
+
+
+
+write_hostapd_config(){
+	local bridge
+	bridge=""
+	bridge=$(uci get $(uci show network | grep ${IF} | cut -d'.' -f1-2).name)
+	test -n "$bridge" && bridge="bridge=$bridge"
+	mkdir -p $(dirname "$HOSTAPD_CONF_FILE")
+	cat << EOF > "$HOSTAPD_CONF_FILE"
+driver=mtlk
+interface=${IF}
+
+
+hw_mode=a
+channel=${CHANNEL}
+country_code=DE
+
+ignore_broadcast_ssid=0
+macaddr_acl=0
+ssid=${ESSID}
+
+#### wpa2 only
+auth_algs=3
+wpa=3
+wpa_passphrase=${PASSPHRASE}
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=TKIP
+rsn_pairwise=CCMP TKIP
+
+${bridge}
+
+EOF
+}
+
+
+link_fw_file(){
+# $1 = fw file
+	local fw
+	fw=$1
+	mkdir -p "$TMP_D"
+	ln -sfv "/lib/firmware/$FW_SUB_DIR/$fw" "$TMP_D/$fw"
+	test -h /lib/firmware/$fw || ln -sfv "$TMP_D/$fw" /lib/firmware/$fw
+}
+
+
+
+prepare(){
+	local e
+	link_fw_file contr_lm.bin
+	link_fw_file ap_upper_wave300.bin
+	
+	for e in $BANDLIST; do
+		link_fw_file ProgModel_${e}_CB_wave300.bin
+		link_fw_file ProgModel_${e}_CB_${MODEL}_${HWREV}_wave300.bin
+		link_fw_file ProgModel_${e}_nCB_wave300.bin
+		link_fw_file ProgModel_${e}_nCB_${MODEL}_${HWREV}_wave300.bin
+	done
+	
+	write_hostapd_config
+	chmod -R 0600 "$TMP_D"
+}
+
+unprepare(){
+	rm "$HOSTAPD_CONF_FILE"
+	rm -r /tmp/firmware-wave300
+}
+
+
+
+lmodule(){
+	insmod mtlkroot.ko
+	sleep 1
+	insmod mtlk.ko ap=1,1
+}
+
+ulmodule(){
+	rmmod mtlk
+	sleep 1
+	rmmod mtlkroot
+}
+
+
+
+ifstart(){
+	ifconfig ${IF} 0.0.0.0 down
+	iwconfig ${IF} channel ${CHANNEL}
+	sleep 1
+	ifconfig ${IF} 0.0.0.0 up
+	sleep 1
+	/usr/sbin/mtlk-hostapd "$HOSTAPD_CONF_FILE" &
+}
+
+ifstop(){
+	killall mtlk-hostapd
+	ifconfig ${IF} 0.0.0.0 down
+}
+
+
+
+start() {
+	prepare
+	lmodule
+	ifstart
+}
+
+
+
+stop() { 
+	ifstop 
+	# ulmodule # it does not work at the moment the router will reboot
+	unprepare
+}
+
+
+
+boot() {
+	# start
+	::
+}
